@@ -1,0 +1,78 @@
+name: 'Valca Security Scan'
+description: 'Blocks insecure code, IaC and AI-agent configuration at CI time, and uploads SARIF to code scanning'
+author: 'PranLabs'
+
+branding:
+  icon: 'shield'
+  color: 'red'
+
+inputs:
+  path:
+    description: 'Path to scan (file or directory)'
+    required: false
+    default: '.'
+  severity:
+    description: 'Minimum severity to report (CRITICAL, HIGH, MEDIUM, LOW, INFO)'
+    required: false
+    default: 'HIGH'
+  sarif-output:
+    description: 'SARIF output file path, for upload to GitHub code scanning'
+    required: false
+    default: 'valca-results.sarif'
+  fail-on-findings:
+    description: 'Exit non-zero when CRITICAL or HIGH findings are present'
+    required: false
+    default: 'true'
+  version:
+    description: 'Valca version to install. Pin this for reproducible CI; defaults to latest.'
+    required: false
+    default: ''
+
+outputs:
+  findings-count:
+    description: 'Number of findings at or above the severity threshold'
+    value: ${{ steps.scan.outputs.findings-count }}
+  sarif-file:
+    description: 'Path to the generated SARIF file'
+    value: ${{ inputs.sarif-output }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Valca
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.version }}" ]; then
+          pip install "valca==${{ inputs.version }}" --quiet
+        else
+          pip install valca --quiet
+        fi
+        valca --help > /dev/null
+
+    - name: Scan
+      id: scan
+      shell: bash
+      run: |
+        set +e
+
+        # Human-readable output for the CI log
+        valca scan "${{ inputs.path }}" --severity "${{ inputs.severity }}" --no-color
+        TERMINAL_EXIT=$?
+
+        # SARIF for GitHub code scanning
+        valca scan "${{ inputs.path }}" \
+          --severity "${{ inputs.severity }}" \
+          --format sarif > "${{ inputs.sarif-output }}" 2>/dev/null
+
+        COUNT=$(valca scan "${{ inputs.path }}" \
+          --severity "${{ inputs.severity }}" \
+          --format json 2>/dev/null \
+          | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d) if isinstance(d,list) else len(d.get('findings',[])))" 2>/dev/null \
+          || echo "0")
+        echo "findings-count=$COUNT" >> "$GITHUB_OUTPUT"
+
+        if [ "${{ inputs.fail-on-findings }}" = "true" ] && [ "$TERMINAL_EXIT" -eq 2 ]; then
+          echo "::error::Valca found CRITICAL or HIGH findings. See the Security tab."
+          exit 2
+        fi
+        exit 0
