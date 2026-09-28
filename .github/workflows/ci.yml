@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  smoke:
+    name: action runs and detects a known finding
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Create a fixture with a known CRITICAL finding
+        run: |
+          mkdir -p fixture
+          cat > fixture/docker-compose.yml <<'EOF'
+          services:
+            db:
+              image: postgres
+              ports:
+                - "5432:5432"
+          EOF
+
+      # Runs THIS commit's action, not a published version, so a broken
+      # action.yml fails the build instead of shipping.
+      - name: Run the action
+        id: scan
+        uses: ./
+        with:
+          path: fixture
+          severity: HIGH
+          fail-on-findings: 'false'
+
+      - name: The scan must have found the exposed port binding
+        run: |
+          COUNT="${{ steps.scan.outputs.findings-count }}"
+          echo "findings-count=$COUNT"
+          if [ "$COUNT" -lt 1 ]; then
+            echo "::error::The action reported $COUNT findings on a fixture that \
+          binds Postgres to 0.0.0.0. Either the action is broken or VGL-D001 stopped firing."
+            exit 1
+          fi
+
+      - name: A SARIF file must have been produced
+        run: |
+          test -s valca-results.sarif
+          python3 -c "
+          import json
+          d = json.load(open('valca-results.sarif'))
+          assert d['runs'][0]['tool']['driver']['name'] == 'valca', d['runs'][0]['tool']['driver']
+          print('SARIF ok:', d['runs'][0]['tool']['driver']['name'], d['runs'][0]['tool']['driver']['version'])
+          "
+
+  fail-mode:
+    name: fail-on-findings actually fails the step
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - run: |
+          mkdir -p fixture
+          printf 'services:\n  db:\n    ports:\n      - "5432:5432"\n' > fixture/docker-compose.yml
+
+      # The default is fail-on-findings: true. If the action stops failing on
+      # CRITICAL findings it silently stops gating anyone's CI, so assert it.
+      - id: should_fail
+        continue-on-error: true
+        uses: ./
+        with:
+          path: fixture
+          severity: HIGH
+
+      - name: The step above must have failed
+        run: |
+          if [ "${{ steps.should_fail.outcome }}" != "failure" ]; then
+            echo "::error::fail-on-findings did not fail on a CRITICAL finding. \
+          Every pipeline relying on this action to gate merges would pass silently."
+            exit 1
+          fi
+          echo "ok: the action failed as it should"
