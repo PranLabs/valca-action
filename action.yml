@@ -64,11 +64,16 @@ runs:
           --severity "${{ inputs.severity }}" \
           --format sarif > "${{ inputs.sarif-output }}" 2>/dev/null
 
+        # `|| echo 0` on a pipeline can append to whatever the pipeline already
+        # printed, producing a two-line COUNT. GITHUB_OUTPUT then receives a bare
+        # "0" with no key= and the whole step errors with "Invalid format".
+        # Strip to digits so the value cannot be anything but an integer.
         COUNT=$(valca scan "${{ inputs.path }}" \
           --severity "${{ inputs.severity }}" \
           --format json 2>/dev/null \
-          | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d) if isinstance(d,list) else len(d.get('findings',[])))" 2>/dev/null \
-          || echo "0")
+          | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d) if isinstance(d,list) else len(d.get('findings',[])))" 2>/dev/null || true)
+        COUNT=$(printf '%s' "$COUNT" | tr -dc '0-9' | cut -c1-9)
+        [ -n "$COUNT" ] || COUNT=0
         echo "findings-count=$COUNT" >> "$GITHUB_OUTPUT"
 
         if [ "${{ inputs.fail-on-findings }}" = "true" ] && [ "$TERMINAL_EXIT" -eq 2 ]; then
